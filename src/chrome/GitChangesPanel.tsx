@@ -396,6 +396,41 @@ function ChangedFiles({
     }
   };
 
+  const runDir = async (
+    dirFiles: GitChangedFile[],
+    dirPath: string,
+    action: "stage" | "unstage" | "discard",
+  ) => {
+    if (busy || dirFiles.length === 0) return;
+    if (action === "discard") {
+      const n = dirFiles.length;
+      const only = dirFiles[0];
+      const untrackedOnly = n === 1 && only?.status === "untracked";
+      const ok = await confirmNative(
+        untrackedOnly
+          ? `Delete untracked file ${basename(only.relative)}?`
+          : n === 1 && only
+            ? `Discard changes in ${basename(only.relative)}? This cannot be undone.`
+            : `Discard all unstaged changes in ${n} files under ${dirPath}? This cannot be undone.`,
+        untrackedOnly ? "Delete" : "Discard",
+      );
+      if (!ok) return;
+    }
+    setBusy(dirPath);
+    try {
+      for (const file of dirFiles) {
+        if (action === "stage") await gitStageFile(cwd, file.relative);
+        else if (action === "unstage") await gitUnstageFile(cwd, file.relative);
+        else await gitDiscardFile(cwd, file.relative);
+      }
+      onMutated(dirFiles.map((file) => file.path));
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const generate = async () => {
     if (!canGenerate) return;
     setBusy("generate");
@@ -623,6 +658,7 @@ function ChangedFiles({
                   busy={busy}
                   onOpenFile={onOpenFile}
                   onAction={run}
+                  onActionDir={runDir}
                 />
               ) : (
                 staged.map((file) => (
@@ -669,6 +705,7 @@ function ChangedFiles({
                   busy={busy}
                   onOpenFile={onOpenFile}
                   onAction={run}
+                  onActionDir={runDir}
                 />
               ) : (
                 unstaged.map((file) => (
@@ -1199,6 +1236,7 @@ function ChangeFileTree({
   busy,
   onOpenFile,
   onAction,
+  onActionDir,
 }: {
   files: GitChangedFile[];
   kind: "staged" | "unstaged";
@@ -1207,6 +1245,11 @@ function ChangeFileTree({
   onOpenFile: (path: string) => void;
   onAction: (
     file: GitChangedFile,
+    action: "stage" | "unstage" | "discard",
+  ) => void;
+  onActionDir: (
+    dirFiles: GitChangedFile[],
+    dirPath: string,
     action: "stage" | "unstage" | "discard",
   ) => void;
 }) {
@@ -1236,6 +1279,7 @@ function ChangeFileTree({
           onToggle={toggle}
           onOpenFile={onOpenFile}
           onAction={onAction}
+          onActionDir={onActionDir}
         />
       ))}
       {rootFiles.map((file) => (
@@ -1253,6 +1297,12 @@ function ChangeFileTree({
   );
 }
 
+function collectDirFiles(node: ChangeTreeNode): GitChangedFile[] {
+  const out = [...node.files];
+  for (const child of node.dirs) out.push(...collectDirFiles(child));
+  return out;
+}
+
 function ChangeDirNode({
   node,
   kind,
@@ -1262,6 +1312,7 @@ function ChangeDirNode({
   onToggle,
   onOpenFile,
   onAction,
+  onActionDir,
 }: {
   node: ChangeTreeNode;
   kind: "staged" | "unstaged";
@@ -1274,8 +1325,14 @@ function ChangeDirNode({
     file: GitChangedFile,
     action: "stage" | "unstage" | "discard",
   ) => void;
+  onActionDir: (
+    dirFiles: GitChangedFile[],
+    dirPath: string,
+    action: "stage" | "unstage" | "discard",
+  ) => void;
 }) {
   const open = !collapsed.has(node.path);
+  const dirFiles = useMemo(() => collectDirFiles(node), [node]);
   return (
     <li>
       <div className="group flex h-7 w-full items-center gap-1 pr-2 leading-none text-content hover:bg-content/5">
@@ -1312,10 +1369,38 @@ function ChangeDirNode({
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
             {node.label}
           </span>
-          <span className="shrink-0 text-[10px] tabular-nums text-content/40">
-            {node.total}
-          </span>
         </button>
+        <div className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex">
+          {kind === "unstaged" ? (
+            <IconAction
+              title={`Discard Changes in ${node.label}`}
+              disabled={busy !== null}
+              onClick={() => onActionDir(dirFiles, node.path, "discard")}
+            >
+              <Undo2 className="size-3.5" strokeWidth={1.75} />
+            </IconAction>
+          ) : null}
+          {kind === "staged" ? (
+            <IconAction
+              title={`Unstage Changes in ${node.label}`}
+              disabled={busy !== null}
+              onClick={() => onActionDir(dirFiles, node.path, "unstage")}
+            >
+              <Minus className="size-3.5" strokeWidth={1.75} />
+            </IconAction>
+          ) : (
+            <IconAction
+              title={`Stage Changes in ${node.label}`}
+              disabled={busy !== null}
+              onClick={() => onActionDir(dirFiles, node.path, "stage")}
+            >
+              <Plus className="size-3.5" strokeWidth={1.75} />
+            </IconAction>
+          )}
+        </div>
+        <span className="shrink-0 text-[10px] tabular-nums text-content/40">
+          {node.total}
+        </span>
       </div>
       {open ? (
         <ul>
@@ -1330,6 +1415,7 @@ function ChangeDirNode({
               onToggle={onToggle}
               onOpenFile={onOpenFile}
               onAction={onAction}
+              onActionDir={onActionDir}
             />
           ))}
           {node.files.map((file) => (
